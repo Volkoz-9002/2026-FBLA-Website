@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    
+    <!-- Load Firebase/Firestore client SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, updateDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        setLogLevel('Debug');
+
+        // --- Canvas Global Variables (MANDATORY USE) ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { projectId: 'default-project' };
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        
+        // Collection path is passed securely from Flask
+        const COLLECTION_PATH = '{{ collection_path }}';
+        
+        let isAuthReady = false;
+        let allItems = []; // To store the fetched items
+
+        // 1. Initialize Authentication (Required before writing to Firestore)
+        async function initializeAuth() {
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                isAuthReady = true;
+                console.log("Admin: Firebase authentication successful.");
+                initializeFoundItemsListener();
+            } catch (error) {
+                console.error("Admin: Authentication Failed:", error);
+                alertBox(`Authentication Failed. Cannot manage items. Error: ${error.code}`);
+            }
+        }
+
+        // 2. Real-time Data Listener
+        function initializeFoundItemsListener() {
+            if (!isAuthReady) return;
+
+            const itemsRef = collection(db, COLLECTION_PATH);
+            const itemsQuery = query(itemsRef);
+            
+            // onSnapshot provides real-time updates
+            onSnapshot(itemsQuery, (snapshot) => {
+                allItems = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                // Sort items: Pending first, then by date (latest first)
+                allItems.sort((a, b) => {
+                    const statusA = a.status === 'Pending' ? 0 : 1;
+                    const statusB = b.status === 'Pending' ? 0 : 1;
+                    if (statusA !== statusB) return statusA - statusB;
+
+                    const timeA = a.timestamp?.seconds || 0;
+                    const timeB = b.timestamp?.seconds || 0;
+                    return timeB - timeA; // Descending by time
+                });
+                
+                renderItems(allItems);
+            }, (error) => {
+                console.error("Admin: Firestore Snapshot Error:", error);
+                document.getElementById('admin-table-body').innerHTML = `<tr><td colspan="5" class="text-red-500 text-center py-8">Error loading items: ${error.message}</td></tr>`;
+            });
+        }
+        
+        // 3. Rendering Logic
+        function renderItems(itemsToDisplay) {
+            const resultsContainer = document.getElementById('admin-table-body');
+            const countDisplay = document.getElementById('item-count');
+            let itemsHtml = '';
+            
+            countDisplay.textContent = itemsToDisplay.length;
+
+            if (itemsToDisplay.length === 0) {
+                resultsContainer.innerHTML = `<tr><td colspan="5" class="text-gray-500 text-center py-8">No items have been reported yet.</td></tr>`;
+                return;
+            }
+
+            itemsToDisplay.forEach(item => {
+                const timestamp = item.timestamp?.toDate ? item.timestamp.toDate().toLocaleDateString() : 'N/A';
+                const buttonDisabled = item.status !== 'Pending' ? 'disabled' : '';
+                const buttonClasses = item.status !== 'Pending' ? 'opacity-50 cursor-not-allowed' : '';
+
+                itemsHtml += `
+                    <tr id="row-${item.id}">
+                        <td class="px-3 py-4 whitespace-nowrap text-xs text-gray-500 overflow-hidden max-w-[60px] truncate">${item.id}</td>
+                        <td class="px-6 py-4">
+                            <div class="text-sm font-medium text-gray-900">${item.name || 'N/A'}</div>
+                            <div class="text-xs text-gray-500 mt-1 max-w-xs">${item.description ? item.description.substring(0, 50) + (item.description.length > 50 ? '...' : '') : 'No description'}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap hidden sm:table-cell">
+                            <div class="text-sm text-gray-900">${item.location || 'N/A'}</div>
+                            <div class="text-xs text-indigo-600">${item.contact || 'N/A'}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span id="status-${item.id}" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${item.status}">
+                                ${item.status}
+                            </span>
+                             <div class="text-xs text-gray-400 mt-1">Reported: ${timestamp}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-y-1 sm:space-y-0 sm:space-x-2 flex flex-col sm:flex-row">
+                            <button onclick="updateStatus('${item.id}', 'Claimed')" 
+                                class="px-3 py-1 bg-green-500 text-white rounded-lg text-xs hover:bg-green-600 transition ${buttonClasses}" ${buttonDisabled}>
+                                Mark Claimed
+                            </button>
+                            <button onclick="updateStatus('${item.id}', 'Archived')" 
+                                class="px-3 py-1 bg-gray-500 text-white rounded-lg text-xs hover:bg-gray-600 transition ${buttonClasses}" ${buttonDisabled}>
+                                Archive
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+            resultsContainer.innerHTML = itemsHtml;
+        }
+
+        // 4. Update Status Logic
+        window.updateStatus = async (itemId, status) => {
+            if (!confirm(`Are you sure you want to mark item ${itemId} as ${status}?`)) {
+                return;
+            }
+
+            const statusSpan = document.getElementById(`status-${itemId}`);
+            const originalStatus = statusSpan.textContent.trim();
+            const originalClass = statusSpan.className;
+            
+            // Optimistically update UI
+            statusSpan.textContent = 'Updating...';
+            statusSpan.className = 'px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-200 text-yellow-800';
+
+            try {
+                const itemRef = doc(db, COLLECTION_PATH, itemId);
+                await updateDoc(itemRef, {
+                    status: status,
+                    updated_at: serverTimestamp()
+                });
+
+                // The onSnapshot listener will handle the final, authoritative UI update.
+                alertBox(`Item ${itemId} status updated to ${status}.`);
+
+            } catch (error) {
+                console.error('Error updating status:', error);
+                alertBox(`Failed to update status: ${error.message}`);
+                
+                // Revert UI on failure
+                statusSpan.textContent = originalStatus;
+                statusSpan.className = originalClass;
+            }
+        }
+        
+        // 5. Custom Alert Box (Replaces alert() and confirm())
+        window.alertBox = (message) => {
+            const modal = document.getElementById('custom-modal');
+            document.getElementById('modal-message').textContent = message;
+            modal.classList.remove('hidden');
+        };
+        window.closeModal = () => {
+            document.getElementById('custom-modal').classList.add('hidden');
+        };
+
+        // Start the application
+        initializeAuth();
+    </script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        /* Style for different statuses */
+        .status-Pending { background-color: #fef3c7; color: #b45309; }
+        .status-Claimed { background-color: #d1fae5; color: #065f46; }
+        .status-Archived { background-color: #e5e7eb; color: #4b5563; }
+        /* Custom modal styles */
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 sm:p-8">
+
+    <!-- Custom Alert Modal (Replaces alert/confirm) -->
+    <div id="custom-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 modal">
+        <div class="bg-white p-6 rounded-xl shadow-xl max-w-sm w-full">
+            <h3 class="text-xl font-bold text-indigo-700 mb-3">System Message</h3>
+            <p id="modal-message" class="text-gray-700 mb-4"></p>
+            <button onclick="closeModal()" class="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">OK</button>
+        </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto bg-white p-6 rounded-xl shadow-2xl">
+        <header class="mb-6 border-b pb-4 flex justify-between items-center">
+            <h1 class="text-3xl font-extrabold text-indigo-800">{{ title }}</h1>
+            <a href="{{ url_for('home') }}" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
+                &larr; Go to Public Site
+            </a>
+        </header>
+
+        <h2 class="text-xl font-semibold text-gray-700 mb-4">
+            Current Found Items (<span id="item-count">0</span>)
+        </h2>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name & Description</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Location / Contact</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status & Date</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-table-body" class="bg-white divide-y divide-gray-200">
+                    <tr><td colspan="5" class="text-gray-500 text-center py-8">Loading items...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

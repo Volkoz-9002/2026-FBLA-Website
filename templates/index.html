@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    
+    <!-- Load Firebase/Firestore client SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        setLogLevel('Debug');
+
+        // --- Canvas Global Variables (MANDATORY USE) ---
+        const isCanvasEnvironment = typeof __firebase_config !== 'undefined';
+        
+        const firebaseConfig = isCanvasEnvironment 
+            ? JSON.parse(__firebase_config) 
+            : { projectId: 'default-project', apiKey: 'AIzaSy_LOCAL_DEV_KEY_FOR_FBLA_2025_XX' };
+            
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        const COLLECTION_PATH = '{{ collection_path }}';
+        let app, db, auth;
+        let allItems = []; // Stores the master list of items from the database
+
+        // Initialize app and DB
+        app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        
+        if (isCanvasEnvironment) {
+            auth = getAuth(app);
+        } else {
+            console.warn("INDEX PAGE: Running locally. Loading mock data.");
+        }
+
+        // Mock data set for local development testing
+        const MOCK_ITEMS = [
+            { id: 'mock1', name: 'Purple Water Bottle', description: 'Hydroflask, found near the cafeteria entrance.', location: 'Cafeteria', contact: 'local@test.com', status: 'Pending', photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/8/8e/Purple_Hydroflask_%2826137947274%29.jpg', timestamp: { toDate: () => new Date() } }, // https://commons.wikimedia.org/wiki/File:Purple_Hydroflask_%2826137947274%29.jpg
+            { id: 'mock2', name: 'Calculus Textbook', description: 'Doodles on page 5.', location: 'Room B302', contact: 'local@test.com', status: 'Claimed', photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/c/c4/Elementary_Calculus_-_Cover.jpg', timestamp: { toDate: () => new Date(Date.now() - 86400000) } }, // https://commons.wikimedia.org/wiki/File:Elementary_Calculus_-_Cover.jpg
+        ];
+
+
+        // 1. Initialize Authentication and Listener (Canvas Environment Only)
+        function initializeAuthAndListener() {
+            if (!auth) return;
+            
+            const signInPromise = initialAuthToken
+                ? signInWithCustomToken(auth, initialAuthToken)
+                : signInAnonymously(auth);
+
+            signInPromise.catch(error => {
+                console.error("Sign-In attempt failed:", error);
+            });
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    console.log("Index: Auth state resolved, user is signed in. Starting listener.");
+                    initializeFoundItemsListener();
+                } else {
+                    console.log("Index: Auth state resolved, no user is signed in. Listener may fail due to permissions.");
+                    // Fallback to the error handler in initializeFoundItemsListener
+                    initializeFoundItemsListener(); 
+                }
+            });
+        }
+
+        // 2. Real-time Data Listener or Mock Data Loader (Local)
+        function initializeFoundItemsListener() {
+            if (!isCanvasEnvironment) {
+                allItems = MOCK_ITEMS;
+                renderItems(allItems);
+                return;
+            }
+
+            // CANVAS (PRODUCTION) LOGIC: Connect to Firestore
+            const itemsRef = collection(db, COLLECTION_PATH);
+            const itemsQuery = query(itemsRef, where("status", "in", ["Pending", "Claimed"]));
+            
+            onSnapshot(itemsQuery, (snapshot) => {
+                allItems = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                
+                // Sort by timestamp, newest first
+                allItems.sort((a, b) => {
+                    const timeA = a.timestamp?.seconds || 0;
+                    const timeB = b.timestamp?.seconds || 0;
+                    return timeB - timeA;
+                });
+                
+                renderItems(allItems);
+            }, (error) => {
+                console.error("Index: Firestore Snapshot Error:", error);
+                document.getElementById('item-list').innerHTML = `<p class="text-red-500 text-center py-8">
+                    Error loading items: Missing permissions. Please ensure your Firebase Security Rules allow 
+                    <span class="font-bold">read access</span> to the public collection: 
+                    <code class="bg-red-50 p-1 rounded">/artifacts/{appId}/public/data/found_items</code>.
+                </p>`;
+            });
+        }
+
+        // 3. Search and Filtering Logic
+        window.filterItems = (searchTerm) => {
+            const query = searchTerm.toLowerCase().trim();
+            
+            if (!query) {
+                renderItems(allItems);
+                return;
+            }
+
+            const filtered = allItems.filter(item => {
+                const name = item.name ? item.name.toLowerCase() : '';
+                const description = item.description ? item.description.toLowerCase() : '';
+                const location = item.location ? item.location.toLowerCase() : '';
+                
+                return name.includes(query) || description.includes(query) || location.includes(query);
+            });
+
+            renderItems(filtered);
+        };
+        
+        // 4. Rendering Logic
+        function renderItems(itemsToDisplay) {
+            const resultsContainer = document.getElementById('item-list');
+            const countDisplay = document.getElementById('item-count');
+            let itemsHtml = '';
+            
+            countDisplay.textContent = itemsToDisplay.length;
+
+            if (itemsToDisplay.length === 0) {
+                resultsContainer.innerHTML = `<p class="text-gray-500 text-center py-10 text-lg">
+                    No items found matching your criteria. Try refining your search, or <a href="{{ url_for('report_item') }}" class="text-indigo-600 hover:text-indigo-700 font-semibold">report a new found item</a>!
+                </p>`;
+                return;
+            }
+
+            itemsToDisplay.forEach(item => {
+                const timestamp = item.timestamp?.toDate ? item.timestamp.toDate().toLocaleDateString() : 'N/A';
+                
+                // Status badge styling
+                let statusClasses = '';
+                if (item.status === 'Pending') {
+                    statusClasses = 'bg-yellow-100 text-yellow-800';
+                } else if (item.status === 'Claimed') {
+                    statusClasses = 'bg-green-100 text-green-800';
+                } else {
+                    statusClasses = 'bg-gray-100 text-gray-800';
+                }
+                
+                // photo display
+
+                const photoDisplay = item.photoUrl && item.photoUrl !== 'No Photo Provided' ? 
+                    `<img src="${item.photoUrl}" alt="${item.name}" class="w-full h-(full-32) object-cover rounded-t-xl mb-3 border-b-2 border-indigo-100" onerror="this.onerror=null; this.src='https://placehold.co/400x300/e0e7ff/3730a3?text=Found+Item';" >` : 
+                    `<div class="w-full h-32 flex items-center justify-center bg-gray-100 rounded-t-xl mb-3 text-gray-400 text-sm">No Photo Available</div>`;
+
+
+                itemsHtml += `
+                    <div class="bg-white rounded-xl shadow-lg hover:shadow-xl transition duration-300 overflow-hidden">
+                        ${photoDisplay}
+                        <div class="p-6">
+                            <div class="flex justify-between items-start mb-2">
+                                <h3 class="text-xl font-bold text-indigo-700">${item.name || 'N/A'}</h3>
+                                <span class="px-3 py-1 text-xs font-medium rounded-full ${statusClasses}">
+                                    ${item.status}
+                                </span>
+                            </div>
+                            
+                            <p class="text-gray-600 mb-3 text-sm line-clamp-2">${item.description || 'No detailed description provided.'}</p>
+                            
+                            <div class="grid grid-cols-2 gap-2 text-sm text-gray-500 border-t pt-3">
+                                <div>
+                                    <strong class="text-gray-700 block">Found Location:</strong>
+                                    ${item.location || 'Unknown'}
+                                </div>
+                                <div>
+                                    <strong class="text-gray-700 block">Reported On:</strong>
+                                    ${timestamp}
+                                </div>
+                            </div>
+                            
+                            <!-- Contact link (simplified action for public view) -->
+                            <div class="mt-4 text-center">
+                                <a href="mailto:${item.contact || 'contact@school.edu'}" 
+                                    class="inline-flex items-center justify-center w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition">
+                                    Contact Reporter
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            resultsContainer.innerHTML = itemsHtml;
+        }
+
+        // Start the application
+        window.onload = () => {
+            if (isCanvasEnvironment) {
+                initializeAuthAndListener();
+            } else {
+                // Local dev: Start the listener/mock data loader immediately
+                initializeFoundItemsListener();
+            }
+        }
+
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-4 sm:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl sm:text-5xl font-extrabold text-indigo-800 tracking-tight">{{ title }}</h1>
+            <p class="mt-2 text-xl text-gray-500">Find what you lost or report what you found.</p>
+        </header>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+            <div class="sm:col-span-2 relative">
+                <input type="text" id="search-input" placeholder="Search by name, description, or location..."
+                       onkeyup="filterItems(this.value)"
+                       class="w-full py-3 pl-12 pr-4 border border-gray-300 rounded-xl shadow-inner focus:ring-indigo-500 focus:border-indigo-500 text-lg transition">
+                <svg class="absolute left-3 top-1/2 transform -translate-y-1/2 h-6 w-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                </svg>
+            </div>
+            
+            <a href="{{ url_for('report_item') }}"
+               class="flex items-center justify-center py-3 px-6 border border-transparent rounded-xl shadow-lg text-lg font-medium text-white bg-green-600 hover:bg-green-700 transition duration-150">
+                + Report Found Item
+            </a>
+        </div>
+        
+        <h2 class="text-2xl font-semibold text-gray-700 mb-4 border-b pb-2">
+            Items Recently Found (<span id="item-count">...</span>)
+        </h2>
+
+        <div id="item-list" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Items will be injected here by JavaScript -->
+            <div class="bg-white p-6 rounded-xl shadow-lg col-span-full text-center text-gray-500">Loading items in real-time...</div>
+        </div>
+
+        <footer class="mt-10 text-center text-sm text-gray-500">
+            <p>&copy; 2024 School Lost and Found. | <a href="{{ url_for('admin_panel') }}" class="text-indigo-600 hover:text-indigo-700">Admin Login</a></p>
+        </footer>
+    </div>
+
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+
+    <div class="bg-white p-10 rounded-xl shadow-2xl max-w-xl w-full text-center">
+        <svg class="mx-auto h-16 w-16 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h1 class="text-3xl font-bold text-gray-800 mt-4 mb-2">Thank You!</h1>
+        <p class="text-gray-600 mb-6">
+            Your found item report has been successfully submitted. We appreciate your honesty!
+        </p>
+
+        <div class="space-y-4 mt-8">
+            <a href="{{ url_for('home') }}"
+               class="block px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300">
+                Go to Home
+            </a>
+            <a href="{{ url_for('report_item') }}"
+               class="block px-6 py-3 border border-indigo-600 text-indigo-600 font-semibold rounded-lg hover:bg-indigo-50 transition duration-300">
+                Report Another Item
+            </a>
+        </div>
+    </div>
+
+</body>
+</html>
